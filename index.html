@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>H/Place</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #111;
+      font-family: system-ui, sans-serif;
+      user-select: none;
+    }
+
+    #viewport {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      cursor: grab;
+      position: relative;
+    }
+
+    #viewport.dragging { cursor: grabbing; }
+
+    #grid {
+      position: absolute;
+      transform-origin: 0 0;
+    }
+
+    .panel {
+      position: absolute;
+      border: 1px solid #2a2a2a;
+      background: #000;
+      overflow: hidden;
+    }
+
+    .panel iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      pointer-events: none;
+    }
+
+    .panel.interactive iframe {
+      pointer-events: auto;
+    }
+
+    .panel-label {
+      position: absolute;
+      bottom: 4px;
+      right: 6px;
+      font-size: 10px;
+      color: #444;
+      pointer-events: none;
+    }
+
+    #controls {
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      display: flex;
+      gap: 6px;
+      z-index: 100;
+    }
+
+    #controls button {
+      width: 36px;
+      height: 36px;
+      border: 1px solid #333;
+      background: #1a1a1a;
+      color: #ccc;
+      font-size: 18px;
+      cursor: pointer;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #controls button:hover {
+      background: #2a2a2a;
+    }
+
+    #info {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      color: #555;
+      font-size: 12px;
+      z-index: 100;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">Scroll to zoom. Drag to pan. Double-click a panel to interact.</div>
+  <div id="viewport">
+    <div id="grid"></div>
+  </div>
+  <div id="controls">
+    <button id="zoomIn" title="Zoom in">+</button>
+    <button id="zoomOut" title="Zoom out">&minus;</button>
+    <button id="resetView" title="Reset view"><img src="https://icons.hackclub.com/api/icons/white/home" alt="Home" width="18" height="18"></button>
+  </div>
+
+  <script>
+    const PANEL_W = 400;
+    const PANEL_H = 300;
+    const MIN_ZOOM = 0.1;
+    const MAX_ZOOM = 3;
+    const RENDER_PADDING = 1;
+
+    const panelManifest = {};
+
+    let camera = { x: 0, y: 0, zoom: 1 };
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let cameraStart = { x: 0, y: 0 };
+    let activePanel = null;
+    const loadedPanels = new Map();
+
+    const viewport = document.getElementById("viewport");
+    const grid = document.getElementById("grid");
+
+    async function loadManifest() {
+      try {
+        const res = await fetch("panels/manifest.json");
+        if (res.ok) {
+          const data = await res.json();
+          for (const entry of data) {
+            const key = `${entry.col},${entry.row}`;
+            panelManifest[key] = entry.src || `panels/${entry.col}_${entry.row}.html`;
+          }
+        }
+      } catch (e) {}
+      render();
+    }
+
+    function getVisibleRange() {
+      const vw = viewport.clientWidth;
+      const vh = viewport.clientHeight;
+
+      const left = camera.x / camera.zoom;
+      const top = camera.y / camera.zoom;
+      const right = (camera.x + vw) / camera.zoom;
+      const bottom = (camera.y + vh) / camera.zoom;
+
+      return {
+        colStart: Math.floor(left / PANEL_W) - RENDER_PADDING,
+        colEnd: Math.ceil(right / PANEL_W) + RENDER_PADDING,
+        rowStart: Math.floor(top / PANEL_H) - RENDER_PADDING,
+        rowEnd: Math.ceil(bottom / PANEL_H) + RENDER_PADDING,
+      };
+    }
+
+    function render() {
+      const range = getVisibleRange();
+      const visibleKeys = new Set();
+
+      for (let row = range.rowStart; row <= range.rowEnd; row++) {
+        for (let col = range.colStart; col <= range.colEnd; col++) {
+          const key = `${col},${row}`;
+          visibleKeys.add(key);
+
+          if (!loadedPanels.has(key)) {
+            createPanel(col, row, key);
+          }
+        }
+      }
+
+      for (const [key, el] of loadedPanels) {
+        if (!visibleKeys.has(key)) {
+          el.remove();
+          loadedPanels.delete(key);
+        }
+      }
+
+      grid.style.transform = `scale(${camera.zoom}) translate(${-camera.x / camera.zoom}px, ${-camera.y / camera.zoom}px)`;
+    }
+
+    function createPanel(col, row, key) {
+      const panel = document.createElement("div");
+      panel.className = "panel";
+      panel.style.left = `${col * PANEL_W}px`;
+      panel.style.top = `${row * PANEL_H}px`;
+      panel.style.width = `${PANEL_W}px`;
+      panel.style.height = `${PANEL_H}px`;
+
+      const src = panelManifest[key];
+      if (src) {
+        const iframe = document.createElement("iframe");
+        iframe.src = src;
+        iframe.loading = "lazy";
+        panel.appendChild(iframe);
+      }
+
+      const label = document.createElement("div");
+      label.className = "panel-label";
+      label.textContent = `${col}, ${row}`;
+      panel.appendChild(label);
+
+      grid.appendChild(panel);
+      loadedPanels.set(key, panel);
+    }
+
+    function setActivePanel(panel) {
+      if (activePanel) activePanel.classList.remove("interactive");
+      activePanel = panel;
+      if (panel) panel.classList.add("interactive");
+    }
+
+    viewport.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      setActivePanel(null);
+      isDragging = true;
+      dragStart = { x: e.clientX, y: e.clientY };
+      cameraStart = { x: camera.x, y: camera.y };
+      viewport.classList.add("dragging");
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!isDragging) return;
+      camera.x = cameraStart.x - (e.clientX - dragStart.x);
+      camera.y = cameraStart.y - (e.clientY - dragStart.y);
+      render();
+    });
+
+    window.addEventListener("mouseup", () => {
+      isDragging = false;
+      viewport.classList.remove("dragging");
+    });
+
+    viewport.addEventListener("dblclick", (e) => {
+      const panel = e.target.closest(".panel");
+      if (panel) {
+        setActivePanel(panel);
+        e.preventDefault();
+      }
+    });
+
+    viewport.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const rect = viewport.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+
+      const worldX = (camera.x + mx) / camera.zoom;
+      const worldY = (camera.y + my) / camera.zoom;
+
+      const delta = e.deltaY > 0 ? 0.9 : 1.1;
+      camera.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, camera.zoom * delta));
+
+      camera.x = worldX * camera.zoom - mx;
+      camera.y = worldY * camera.zoom - my;
+
+      render();
+    }, { passive: false });
+
+    document.getElementById("zoomIn").addEventListener("click", () => {
+      const cx = viewport.clientWidth / 2;
+      const cy = viewport.clientHeight / 2;
+      const worldX = (camera.x + cx) / camera.zoom;
+      const worldY = (camera.y + cy) / camera.zoom;
+      camera.zoom = Math.min(MAX_ZOOM, camera.zoom * 1.3);
+      camera.x = worldX * camera.zoom - cx;
+      camera.y = worldY * camera.zoom - cy;
+      render();
+    });
+
+    document.getElementById("zoomOut").addEventListener("click", () => {
+      const cx = viewport.clientWidth / 2;
+      const cy = viewport.clientHeight / 2;
+      const worldX = (camera.x + cx) / camera.zoom;
+      const worldY = (camera.y + cy) / camera.zoom;
+      camera.zoom = Math.max(MIN_ZOOM, camera.zoom / 1.3);
+      camera.x = worldX * camera.zoom - cx;
+      camera.y = worldY * camera.zoom - cy;
+      render();
+    });
+
+    document.getElementById("resetView").addEventListener("click", () => {
+      camera = { x: 0, y: 0, zoom: 1 };
+      render();
+    });
+
+    window.addEventListener("resize", render);
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") setActivePanel(null);
+    });
+
+    loadManifest();
+  </script>
+</body>
+</html>
